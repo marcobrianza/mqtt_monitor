@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MQTT Monitor</title>
+<style>
+body{margin:0;background:#edf1f4;color:#172937;font:15px system-ui}
+main{max-width:1240px;margin:auto;padding:24px}h1{margin:0 0 10px}
+h2{font-size:18px;margin:0 0 12px}.panel{padding:18px;margin-top:18px;background:white;border:1px solid #d3dce4;border-radius:12px;overflow:auto}
+table{width:100%;border-collapse:collapse}th,td{padding:9px;text-align:left;border-bottom:1px solid #e8edf1;vertical-align:top}
+td{overflow-wrap:anywhere;min-width:90px}code{white-space:pre-wrap;overflow-wrap:anywhere}.muted{color:#466071}
+
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-top:18px}
+.status-grid .panel{margin:0}.status-line{display:flex;gap:9px;align-items:center;font-weight:650}
+.dot{display:inline-block;width:10px;height:10px;flex:0 0 10px;border-radius:50%;background:#a16a18}
+.dot[data-tone="ok"]{background:#198454}.dot[data-tone="error"]{background:#c23b43}
+.dot.flash{animation:flash .55s ease-out}@keyframes flash{40%{box-shadow:0 0 0 7px #19845444}}
+@media(prefers-reduced-motion:reduce){.dot.flash{animation:none}}
+.endpoint{margin:5px 0 0 19px;font-size:13px;color:#466071}
+#page-error{color:#a3252e}td{white-space:pre-line}
+
+.field-list{display:flex;flex-wrap:wrap;gap:6px}
+.field{display:inline-grid;gap:3px;padding:3px 7px;background:#edf1f4;border:1px solid transparent;border-radius:5px}
+.field.received{background:#dff3e8;color:#115439}
+.legend{font-size:13px;color:#466071}.legend .field{display:inline-block;margin-right:4px}.legend .field:not(:first-child){margin-left:10px}
+.inventory{min-width:760px}.inventory :is(th,td):first-child{width:42%;min-width:350px;white-space:nowrap}
+.field time,.field small{font-size:11px;color:#466071}.field-value{font-weight:650;font-variant-numeric:tabular-nums}
+</style>
+<main>
+<h1>MQTT Monitor</h1>
+
+<div class="status-grid">
+  <div class="panel"><div class="status-line"><span id="mqtt-dot" class="dot"></span><span id="mqtt-state">MQTT · Connecting…</span></div><div id="broker" class="endpoint"></div></div>
+  <div class="panel"><div class="status-line"><span id="influx-dot" class="dot"></span><span id="influx-state">InfluxDB</span></div><div id="writes" class="endpoint"></div></div>
+</div>
+<p id="page-error" role="status" hidden></p>
+<section class="panel"><h2>Field inventory</h2><p class="legend"><span class="field received">Green</span> Received <span class="field">Grey</span> Waiting for first value</p><table class="inventory"><thead><tr><th>Topic</th><th>Measurement</th><th>Fields</th></tr></thead><tbody id="routes"></tbody></table></section>
+</main>
+<script>
+const byId=id=>document.getElementById(id);
+function table(id, rows){
+  const body=byId(id), fragment=document.createDocumentFragment();
+  for(const values of rows){
+    const row=document.createElement('tr');
+    for(const value of values){
+      const cell=document.createElement('td'); if(value instanceof Node)cell.append(value);else cell.textContent=value; row.append(cell);
+    }
+    fragment.append(row);
+  }
+  body.replaceChildren(fragment);
+}
+function dateLabel(time){
+  return new Date(time).toLocaleString('en-GB',{dateStyle:'short',timeStyle:'medium'});
+}
+function ageLabel(time){
+  const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(time))/1000));
+  if(seconds<60)return seconds+' s ago';
+  if(seconds<3600)return Math.floor(seconds/60)+' min ago';
+  return Math.floor(seconds/3600)+' h '+Math.floor(seconds%3600/60)+' min ago';
+}
+let previousReceived;
+const mqttLabels={connecting:'Connecting…',connected:'Connected',error:'Error',disconnected:'Disconnected'};
+function indicators(status,broker,database){
+  const dot=byId('mqtt-dot');
+  dot.dataset.tone=status.mqtt==='connected'?'ok':status.mqtt==='connecting'?'pending':'error';
+  if(previousReceived!==undefined&&status.received>previousReceived){
+    dot.classList.remove('flash');
+    void dot.offsetWidth;
+    dot.classList.add('flash');
+  }
+  previousReceived=status.received;
+  byId('mqtt-state').textContent='MQTT · '+(mqttLabels[status.mqtt]||status.mqtt)+' · '+status.received+' received';
+  byId('broker').textContent=broker.host+':'+broker.port+(status.mqtt_detail?' · '+status.mqtt_detail:'')+
+    (status.last_received_at?' · Last message: '+dateLabel(status.last_received_at)+' ('+ageLabel(status.last_received_at)+')':' · Waiting for first message');
+  byId('influx-dot').dataset.tone=status.influx==='ok'?'ok':status.influx.startsWith('error')?'error':'pending';
+  byId('influx-state').textContent='InfluxDB · '+({ok:'Writing',waiting:'Waiting for points',preview:'Preview'}[status.influx]||status.influx);
+  byId('writes').textContent='Database: '+database+' · '+status.written+' written · '+status.failed+' failed · '+status.dropped+' dropped';
+}
+function inventoryRows(routes,latest){
+  const groups=new Map(), byName=new Map();
+  const groupFor=(topic,measurement)=>{
+    const key=JSON.stringify([topic,measurement]);
+    if(!groups.has(key))groups.set(key,{topic,measurement,fields:new Set(),readings:new Map()});
+    return groups.get(key);
+  };
+  for(const rule of routes){
+    if(rule.enabled===false)continue;
+    const group=groupFor(rule.topic,rule.measurement);
+    byName.set(rule.name,rule);
+    for(const field of rule.fields||[])group.fields.add(field);
+  }
+  for(const point of latest){
+    const rule=byName.get(point.rule);
+    if(!rule)continue;
+    const group=groupFor(rule.topic,point.measurement);
+    for(const [key,value] of Object.entries(point.fields)){
+      const time=point.field_times[key];
+      if((group.readings.get(key)?.time||'')>time)continue;
+      group.readings.set(key,{value,time});
+    }
+  }
+  return [...groups.values()].map(({topic,measurement,fields,readings})=>{
+    const list=document.createElement('div');list.className='field-list';
+    const keys=[...new Set([...fields,...readings.keys()])].sort();
+    for(const field of keys){
+      const chip=document.createElement('div');chip.className='field';
+      const reading=readings.get(field);
+      chip.classList.toggle('received',Boolean(reading));
+      const name=document.createElement('code');name.textContent=field;
+      chip.append(name);
+      const value=document.createElement('span');value.className='field-value';
+      value.textContent=reading?String(reading.value):'—';
+      const time=document.createElement('small');
+      time.textContent=reading?dateLabel(reading.time)+' · '+ageLabel(reading.time):'Waiting for reading';
+      chip.append(value,time);
+      list.append(chip);
+    }
+    return [topic,measurement,list];
+  });
+}
+async function refresh(){
+  try{
+    const response=await fetch('/api/state',{cache:'no-store'});
+    if(!response.ok)throw Error('HTTP '+response.status);
+    const {status,latest,broker,database,routes}=await response.json();
+    byId('page-error').hidden=true;
+    indicators(status,broker,database);
+    table('routes',inventoryRows(routes,latest));
+  }catch(error){
+    byId('mqtt-dot').dataset.tone='error';
+    byId('page-error').hidden=false;
+    byId('page-error').textContent='Dashboard unavailable · '+error.message;
+  }
+  finally{setTimeout(refresh,1000);}
+}
+refresh();
+</script>
+</html>

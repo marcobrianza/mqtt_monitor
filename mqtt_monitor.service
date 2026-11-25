@@ -1,0 +1,16 @@
+[Unit]
+Description=Lozza MQTT Monitor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=mqtt-monitor
+Group=mqtt-monitor
+WorkingDirectory=/opt/mqtt_monitor
+ExecStart=/opt/mqtt_monitor/.venv/bin/python -u /opt/mqtt_monitor/mqtt_monitor.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

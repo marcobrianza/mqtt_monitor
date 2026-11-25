@@ -1,0 +1,75 @@
+{
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8768
+  },
+  "mqtt": {
+    "host": "192.168.13.13",
+    "port": 1883,
+    "username": "",
+    "password": ""
+  },
+  "influx": {
+    "url": "http://192.168.13.13:8086",
+    "database": "lozza",
+    "enabled": false
+  },
+  "routes": [
+    {
+      "name": "shelly-power",
+      "topic": "lozza/shelly/energy_heating/events/rpc",
+      "measurement": "Heat_Pump",
+      "tags": {
+        "site": "lozza",
+        "device": "your-shelly-device-id"
+      },
+      "include_scalar_fields": true,
+      "data_path": "/params/em:0"
+    },
+    {
+      "name": "shelly-energy",
+      "topic": "lozza/shelly/energy_heating/events/rpc",
+      "measurement": "Heat_Pump",
+      "tags": {
+        "site": "lozza",
+        "device": "your-shelly-device-id"
+      },
+      "include_scalar_fields": true,
+      "data_path": "/params/emdata:0"
+    },
+    {
+      "name": "temp_cucina-climate",
+      "topic": "lozza/shelly/temp_cucina/#",
+      "measurement": "temp_cucina",
+      "log_retained": true,
+      "fields": [
+        "tC",
+        "rh",
+        "rssi",
+        "percent",
+        "V"
+      ],
+      "exclude_topics": [
+        "lozza/shelly/temp_cucina/online"
+      ],
+      "recursive": true
+    },
+    {
+      "name": "temp2-climate",
+      "topic": "lozza/shelly/temp2/#",
+      "measurement": "temp2",
+      "log_retained": true,
+      "fields": [
+        "tC",
+        "rh",
+        "rssi",
+        "percent",
+        "V"
+      ],
+      "exclude_topics": [
+        "lozza/shelly/temp2/online"
+      ],
+      "recursive": true
+    }
+  ]
+}
